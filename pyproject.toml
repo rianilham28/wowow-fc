@@ -1,0 +1,32 @@
+[project]
+name = "firecrawl-creator"
+version = "0.1.0"
+description = "Firecrawl account creator using CloakBrowser with geoIP"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cloakbrowser[geoip]>=0.3.0",
+    "curl-cffi>=0.15.0",
+    "rich>=14.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[project.scripts]
+fc = "src.main:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG"]
+
+[tool.ty.environment]
+python-version = "3.12"
+python = ".venv"
