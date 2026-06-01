@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+
+# Project-specific
+.env
+profiles/
+firecrawl_accounts.txt
+gmail-tokens.json
+.ruff_cache/
+
+# IDE / editor configs
+.vscode/
+.zed/
+
+# OpenCode session data
+.omo/
+opencode.json
