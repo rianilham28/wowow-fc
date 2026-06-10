@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 
 PLACEHOLDER_ENV_VALUES: dict[str, list[str]] = {
-"FREEMAIL_API_URL": ["https://your-freemail-api.example.com"],
-"FREEMAIL_API_TOKEN": ["replace-with-your-freemail-token"],
+    "FREEMAIL_API_URL": ["https://your-freemail-api.example.com"],
+    "FREEMAIL_API_TOKEN": ["replace-with-your-freemail-token"],
 }
 
 
@@ -13,6 +13,7 @@ PLACEHOLDER_ENV_VALUES: dict[str, list[str]] = {
 # 1. Zero dependencies — one less package to install
 # 2. Supports inline comments and quoted values
 # 3. Simple enough for this project's needs
+
 
 def _load_dotenv() -> None:
     env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -64,8 +65,6 @@ def validate_config() -> bool:
     if EMAIL_PROVIDER == "gmail":
         if not GMAIL_TOKENS_PATH:
             missing.append("GMAIL_TOKENS_PATH")
-        else:
-            from pathlib import Path
 
             path = Path(os.path.expanduser(GMAIL_TOKENS_PATH))
             if not path.exists():
@@ -111,11 +110,6 @@ FREEMAIL_API_TOKEN: str = _get_str("FREEMAIL_API_TOKEN")
 # Proxy
 PROXY_URL: str = _get_str("PROXY_URL")
 
-# Resin sticky proxy config
-PROXY_HOST: str = _get_str("PROXY_HOST")
-PROXY_PORT: str = _get_str("PROXY_PORT", "2260")
-PROXY_TOKEN: str = _get_str("PROXY_TOKEN")
-PROXY_PLATFORM: str = _get_str("PROXY_PLATFORM", "Default")
 
 # Upload to MySearch proxy
 SERVER_URL: str = _get_str("SERVER_URL")
@@ -125,6 +119,7 @@ SERVER_ADMIN_PASSWORD: str = _get_str("SERVER_ADMIN_PASSWORD")
 DEFAULT_COUNT: int = _get_int("DEFAULT_COUNT", 1)
 DEFAULT_CONCURRENCY: int = _get_int("DEFAULT_CONCURRENCY", 2)
 DEFAULT_DELAY: int = _get_int("DEFAULT_DELAY", 10)
+CHALLENGE_DELAY: int = _get_int("CHALLENGE_DELAY", 60)  # Vercel bot detection cooldown
 
 # Email polling
 EMAIL_CODE_TIMEOUT: int = _get_int("EMAIL_CODE_TIMEOUT", 30)
@@ -132,8 +127,14 @@ EMAIL_POLL_INTERVAL: int = _get_int("EMAIL_POLL_INTERVAL", 2)
 # API key verification
 API_KEY_TIMEOUT: int = _get_int("API_KEY_TIMEOUT", 20)
 
+# Retry defaults
+MAX_RETRIES: int = _get_int("MAX_RETRIES", 3)
+BROWSER_RETRIES: int = _get_int("BROWSER_RETRIES", 3)
+NETWORK_RETRY_BASE_DELAY: int = _get_int("NETWORK_RETRY_BASE_DELAY", 2)
+HTTP_TIMEOUT: int = _get_int("HTTP_TIMEOUT", 30)
+
 # Firecrawl API constants (magic strings from creator_rest.py)
-SIGNUP_ACTION: str = "703cbd7d984f74f293927ea3aa6335a018fbca6bf7"
+SIGNUP_ACTION: str = "708ba1239447c53052b8473d0f57ac8766c1eda6ab"
 SUPABASE_AUTH_COOKIE: str = "sb-alttmdsdujxrfnakrkyi-auth-token"
 SUPABASE_CODE_VERIFIER_COOKIE: str = "sb-alttmdsdujxrfnakrkyi-auth-token-code-verifier"
 MCL_SCRIPT_URL: str = (
