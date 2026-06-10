@@ -2,7 +2,6 @@
 """Entry point for the Firecrawl account creator."""
 
 import asyncio
-import signal
 import sys
 from dataclasses import dataclass
 
@@ -11,6 +10,7 @@ from rich.console import Console
 from src.config import DEFAULT_CONCURRENCY, DEFAULT_COUNT, DEFAULT_DELAY, PROXY_URL, validate_config
 from src.email_provider import create_email
 from src.log import Log
+from src.session import default_manager as session
 
 console = Console()
 
@@ -21,6 +21,7 @@ class CLIConfig:
     count: int = DEFAULT_COUNT
     concurrency: int = DEFAULT_CONCURRENCY
 
+
 def print_config(cfg: CLIConfig) -> None:
     console.print("[bold]Configuration:[/]")
     console.print(f"  Proxy: {'configured' if (cfg.proxy or PROXY_URL) else 'none (direct)'}")
@@ -29,7 +30,9 @@ def print_config(cfg: CLIConfig) -> None:
     console.print(f"  Delay: {DEFAULT_DELAY}s")
 
 
-async def register_one(index: int, total: int, sem: asyncio.Semaphore, delay: int, proxy: str | None) -> str:
+async def register_one(
+    index: int, total: int, sem: asyncio.Semaphore, delay: int, proxy: str | None
+) -> str:
     from src.creator_rest import create_account_rest as create_account
 
     async with sem:
@@ -48,6 +51,8 @@ async def register_one(index: int, total: int, sem: asyncio.Semaphore, delay: in
     if delay > 0:
         await asyncio.sleep(delay)
     return status
+
+
 async def run(cfg: CLIConfig, delay: int) -> None:
     sem = asyncio.Semaphore(cfg.concurrency)
     tasks: list[asyncio.Task] = []
@@ -58,12 +63,22 @@ async def run(cfg: CLIConfig, delay: int) -> None:
 
     success = 0
     failed = 0
-    for task in tasks:
-        status = await task
-        if status == "success":
-            success += 1
-        else:
-            failed += 1
+    try:
+        for task in tasks:
+            status = await task
+            if status == "success":
+                success += 1
+            else:
+                failed += 1
+    except asyncio.CancelledError:
+        # Graceful shutdown on Ctrl+C
+        console.print("\n[yellow]Cancelling remaining tasks...[/]")
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        # Wait for all tasks to finish cancellation
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
     console.print(f"\n[bold cyan]Done:[/] Success [green]{success}[/]  Failed [red]{failed}[/]")
 
@@ -74,7 +89,9 @@ async def main_async(args: list[str]) -> None:
     parser = argparse.ArgumentParser(description="Firecrawl Account Creator")
     parser.add_argument("count", nargs="?", type=int, default=None, help="Number of accounts")
     parser.add_argument("--concurrency", type=int, default=None, help="Max concurrent sessions")
-    parser.add_argument("--proxy", type=str, default=None, help="Proxy URL (socks5://user:pass@host:port)")
+    parser.add_argument(
+        "--proxy", type=str, default=None, help="Proxy URL (socks5://user:pass@host:port)"
+    )
     parsed = parser.parse_args(args)
 
     cfg = CLIConfig(
@@ -92,13 +109,20 @@ async def main_async(args: list[str]) -> None:
     if not validate_config():
         return
 
+    # Configure shared session with the resolved proxy
+    resolved_proxy = cfg.proxy if cfg.proxy is not None else (PROXY_URL or None)
+    session.configure(resolved_proxy)
+
     console.print(f"\nCreating [bold]{cfg.count}[/] account(s), concurrency {cfg.concurrency}...")
     await run(cfg, DEFAULT_DELAY)
 
 
 def main() -> None:
-    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-    asyncio.run(main_async(sys.argv[1:]))
+    try:
+        asyncio.run(main_async(sys.argv[1:]))
+    except KeyboardInterrupt:
+        console.print("\n[bold red]Interrupted.[/]")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
