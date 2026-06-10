@@ -13,7 +13,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-from curl_cffi.requests import AsyncSession, Session
+from curl_cffi.requests import AsyncSession
 
 from src.config import (
     EMAIL_CODE_TIMEOUT,
@@ -23,6 +23,7 @@ from src.config import (
     FREEMAIL_API_URL,
     GMAIL_TOKENS_PATH,
 )
+from src.session import default_manager as session
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +69,15 @@ def _extract_urls(text: str) -> list[str]:
     ]
 
 
-def _extract_verification_link_from_content(
-    subject: str, sender: str, content: str
-) -> str | None:
+def _extract_verification_link_from_content(subject: str, sender: str, content: str) -> str | None:
     urls = _extract_urls(content)
 
-    # First pass: strict host+path match
     for url in urls:
         if _is_image(url):
             continue
         if _is_verification(url):
             return url
 
-    # Second pass: check if message is verification-related, then match path-only
     combined = f"{sender} {subject} {content[:4000]}".lower()
     if not any(token in combined for token in _MSG_HINTS):
         return None
@@ -119,13 +116,35 @@ async def _freemail_request(
 
 
 _DOMAIN_INDEX = 0
+_BLOCKED_DOMAINS: set[str] = {"zztestxyz999.ccwu.cc", "indevs.in"}
 
 
-async def _fetch_domains() -> list[str]:
+def _is_domain_blocked(domain: str) -> bool:
+    """Check if domain or any parent domain is blocked."""
+    domain = domain.lower()
+    while domain:
+        if domain in _BLOCKED_DOMAINS:
+            return True
+        parts = domain.split(".", 1)
+        if len(parts) <= 1:
+            break
+        domain = parts[1]
+    return False
+
+
+def block_domain(domain: str) -> None:
+    """Mark a domain as blocked so it won't be used again."""
+    _BLOCKED_DOMAINS.add(domain.lower())
+    logger.info("Blocked domain: %s", domain)
+
+
+async def _fetch_domains(*, include_blocked: bool = False) -> list[str]:
     try:
         data = await _freemail_request("GET", "/api/domains")
         if isinstance(data, list):
-            return data
+            if include_blocked:
+                return data
+            return [d for d in data if not _is_domain_blocked(d)]
     except Exception:
         pass
     return []
@@ -135,29 +154,39 @@ async def _freemail_create_email() -> tuple[str, str]:
     global _DOMAIN_INDEX
     pw = _password()
 
-    params = {}
-    if _DOMAIN_INDEX > 0:
-        params["domainIndex"] = _DOMAIN_INDEX
+    all_domains = await _fetch_domains(include_blocked=True)
+    if not all_domains:
+        username = f"fc-{rand_str()}"
+        return f"{username}@freemail.local", pw
 
-    data = await _freemail_request("GET", "/api/generate", params=params or None)
-    email = ""
-    if isinstance(data, dict):
-        email = data.get("email", "")
+    valid_indices = [i for i, d in enumerate(all_domains) if not _is_domain_blocked(d)]
 
-    if not email:
-        domains = await _fetch_domains()
-        if domains:
-            _DOMAIN_INDEX = (_DOMAIN_INDEX + 1) % len(domains)
-            params["domainIndex"] = _DOMAIN_INDEX
+    if not valid_indices:
+        username = f"fc-{rand_str()}"
+        return f"{username}@freemail.local", pw
+
+    start_pos = _DOMAIN_INDEX % len(valid_indices)
+    for i in range(len(valid_indices)):
+        api_idx = valid_indices[(start_pos + i) % len(valid_indices)]
+        params = {"domainIndex": api_idx}
+
+        try:
             data = await _freemail_request("GET", "/api/generate", params=params)
+            email = ""
             if isinstance(data, dict):
                 email = data.get("email", "")
-    if not email:
-        username = f"fc-{rand_str()}"
-        email = f"{username}@freemail.local"
 
-    _DOMAIN_INDEX += 1
-    return email, pw
+            if email:
+                domain = email.split("@")[1].lower() if "@" in email else ""
+                if not _is_domain_blocked(domain):
+                    _DOMAIN_INDEX = (start_pos + i + 1) % len(valid_indices)
+                    return email, pw
+                logger.warning("API returned blocked domain %s for index %d", domain, api_idx)
+        except Exception as exc:
+            logger.warning("Freemail generate error for index %d: %s", api_idx, exc)
+
+    username = f"fc-{rand_str()}"
+    return f"{username}@freemail.local", pw
 
 
 def _message_id(message: dict[str, Any]) -> str | None:
@@ -174,13 +203,10 @@ def _message_content(message: dict[str, Any]) -> str:
 
 
 async def _freemail_fetch_messages(email: str) -> list[dict[str, Any]]:
-    data = await _freemail_request(
-        "GET", "/api/emails", params={"mailbox": email, "limit": 50}
-    )
+    data = await _freemail_request("GET", "/api/emails", params={"mailbox": email, "limit": 50})
     if not isinstance(data, list):
         return []
 
-    # Check if list endpoint already has full details (avoids N+1 queries)
     _required = {"subject", "sender", "content", "html_content"}
     if all(_required.issubset(msg.keys()) for msg in data if isinstance(msg, dict)):
         return [
@@ -196,7 +222,6 @@ async def _freemail_fetch_messages(email: str) -> list[dict[str, Any]]:
             if isinstance(msg, dict) and msg.get("id")
         ]
 
-    # Fallback: fetch details concurrently instead of N+1 sequential requests
     valid_msgs = [msg for msg in data if isinstance(msg, dict) and msg.get("id")]
 
     async def _fetch_one(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -210,13 +235,10 @@ async def _freemail_fetch_messages(email: str) -> list[dict[str, Any]]:
                     "from": detail.get("sender", msg.get("sender", "")),
                     "text": detail.get("content", msg.get("content", "")),
                     "html": detail.get("html_content", msg.get("html_content", "")),
-                    "received_at": detail.get(
-                        "received_at", msg.get("received_at", "")
-                    ),
+                    "received_at": detail.get("received_at", msg.get("received_at", "")),
                 }
         except Exception:
             pass
-        # Fallback to list data on error or unexpected response
         return {
             "id": str(mid),
             "subject": msg.get("subject", ""),
@@ -265,8 +287,9 @@ async def _freemail_poll_verification_link(
 
     return None
 
+
 # ---------------------------------------------------------------------------
-# Gmail Backend
+# Gmail Backend (async-only)
 # ---------------------------------------------------------------------------
 
 
@@ -284,9 +307,7 @@ def _normalize_gmail(email: str) -> str:
 
 class GmailBackend:
     def __init__(self, tokens_path: str | None = None):
-        self.tokens_path = tokens_path or os.environ.get(
-            "GMAIL_TOKENS_PATH", "gmail-tokens.json"
-        )
+        self.tokens_path = tokens_path or os.environ.get("GMAIL_TOKENS_PATH", "gmail-tokens.json")
         self._tokens: dict[str, dict] = {}
         self._load_tokens()
         self._accounts: list[str] = list(self._tokens.keys())
@@ -313,7 +334,7 @@ class GmailBackend:
             json.dump(self._tokens, f, indent=2)
             f.write("\n")
 
-    def _get_valid_token(self, email: str) -> dict:
+    async def _get_valid_token(self, email: str) -> dict:
         token = self._tokens.get(email)
         if not token:
             for key, val in self._tokens.items():
@@ -324,13 +345,15 @@ class GmailBackend:
             raise ValueError(f"No token found for {email}")
         expiry = token.get("token_expiry", 0)
         if time.time() * 1000 > expiry - 60_000:
-            token = self._refresh_token(email, token)
+            token = await self._refresh_token(email, token)
         return token
 
-    def _refresh_token(self, email: str, token: dict) -> dict:
+    async def _refresh_token(self, email: str, token: dict) -> dict:
+        """Refresh OAuth token using the shared async session."""
         if not token.get("refresh_token"):
             raise ValueError(f"No refresh_token for {email}. Re-authorize.")
-        resp = Session().post(
+        client = session.get_async()
+        resp = await client.post(
             GOOGLE_TOKEN_URL,
             data={
                 "client_id": token["client_id"],
@@ -368,19 +391,23 @@ class GmailBackend:
         self._used_variants.add(email.lower())
         return email
 
-    async def poll_for_verification_link(
-        self, email: str, timeout: int
-    ) -> str | None:
+    async def generate(self) -> str:
+        """Pick an account in round-robin and generate a +alias."""
+        if not self._accounts:
+            raise ValueError("No Gmail accounts available")
+        base = self._accounts[self._rr_index % len(self._accounts)]
+        self._rr_index += 1
+        return self._generate_alias(base)
+
+    async def poll_for_verification_link(self, email: str, timeout: int) -> str | None:
         base_email = _normalize_gmail(email)
-        token = self._get_valid_token(base_email)
+        token = await self._get_valid_token(base_email)
         access_token = token["access_token"]
 
         query = f"to:{email} is:unread newer_than:1d"
         deadline = time.time() + timeout
 
-        logger.info(
-            "Polling Gmail %s (base: %s) for %ds", email, base_email, timeout
-        )
+        logger.info("Polling Gmail %s (base: %s) for %ds", email, base_email, timeout)
 
         while time.time() < deadline:
             try:
@@ -390,7 +417,7 @@ class GmailBackend:
             except Exception as e:
                 logger.warning("Gmail poll error: %s: %s", type(e).__name__, e)
                 if "401" in str(e):
-                    token = self._get_valid_token(base_email)
+                    token = await self._get_valid_token(base_email)
                     access_token = token["access_token"]
 
             await asyncio.sleep(EMAIL_POLL_INTERVAL)
@@ -398,9 +425,7 @@ class GmailBackend:
         logger.warning("Gmail poll timed out for %s", email)
         return None
 
-    async def _fetch_verification_link(
-        self, access_token: str, query: str
-    ) -> str | None:
+    async def _fetch_verification_link(self, access_token: str, query: str) -> str | None:
         async with AsyncSession(timeout=15) as client:
             search_resp = await client.get(
                 f"{GMAIL_API_BASE}/messages",
@@ -458,9 +483,7 @@ class GmailBackend:
 
     def _find_body_in_parts(self, parts: list, target_mime: str) -> str | None:
         for part in parts:
-            if part.get("mimeType") == target_mime and part.get("body", {}).get(
-                "data"
-            ):
+            if part.get("mimeType") == target_mime and part.get("body", {}).get("data"):
                 return _decode_base64url(part["body"]["data"])
             if part.get("parts"):
                 found = self._find_body_in_parts(part["parts"], target_mime)
@@ -493,9 +516,8 @@ async def create_email() -> tuple[str, str]:
     else:
         return await _freemail_create_email()
 
-async def poll_verification_link(
-    email: str, timeout: int = EMAIL_CODE_TIMEOUT
-) -> str | None:
+
+async def poll_verification_link(email: str, timeout: int = EMAIL_CODE_TIMEOUT) -> str | None:
     """Poll for verification link using the configured provider."""
     if EMAIL_PROVIDER == "gmail":
         backend = _get_gmail_backend()

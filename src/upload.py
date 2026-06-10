@@ -1,19 +1,18 @@
 """Upload verified API keys to MySearch proxy."""
 
-from curl_cffi.requests import Session
-
 from src.config import SERVER_ADMIN_PASSWORD, SERVER_URL
 from src.log import Log
+from src.session import default_manager as session
 
 
-def upload_key(email: str, api_key: str, log: Log | None = None) -> bool:
+async def upload_key(email: str, api_key: str, log: Log | None = None) -> bool:
     if not SERVER_URL or not SERVER_ADMIN_PASSWORD:
         return False
 
     if log:
         log.step("Uploading to server")
     try:
-        resp = Session().post(
+        resp = await session.get_async().post(
             f"{SERVER_URL}/api/keys",
             json={"key": api_key, "email": email, "service": "firecrawl"},
             headers={"Authorization": f"Bearer {SERVER_ADMIN_PASSWORD}"},
