@@ -2,6 +2,9 @@
 
 Bulk-create Firecrawl accounts via REST API with CloakBrowser anti-bot token generation.
 
+> This project is shared on [LINUX DO](https://linux.do) — a friendly Chinese tech community.
+
+
 ## Features
 
 - **REST-based registration** — no browser automation for the signup flow itself; uses direct HTTP requests with `curl_cffi` (Chrome impersonation)
